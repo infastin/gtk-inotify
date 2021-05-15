@@ -13,6 +13,8 @@
 #include "inotify_app.h"
 #include "inotify_app_win.h"
 
+/* Definitions {{{ */
+
 struct _InotifyAppWindow
 {
 	GtkApplicationWindow parent;
@@ -29,6 +31,8 @@ struct _InotifyAppWindow
 };
 
 G_DEFINE_TYPE(InotifyAppWindow, inotify_app_window, GTK_TYPE_APPLICATION_WINDOW);
+
+/* }}} */
 
 /* Choose directory {{{ */
 
@@ -63,6 +67,9 @@ static void directory_choose_clicked(GtkButton *button,
 
 	g_signal_connect(native, "response", G_CALLBACK(on_response), win->directory_choose_entry);
 	gtk_native_dialog_show(GTK_NATIVE_DIALOG(native));
+
+	if ((gtk_widget_get_visible(win->status_bar_err)) == TRUE)
+		gtk_widget_set_visible(win->status_bar_err, FALSE);
 }
 
 /* }}} */
@@ -73,18 +80,15 @@ static void directory_choose_clicked(GtkButton *button,
 
 struct ListenerData
 {
-	GtkWidget *list;
-	GtkWidget *status_bar;
-	GtkWidget *clear;
-	GtkWidget *entries;
+	GtkWidget *win;
 	const char *dir;
 };
 
 struct ListenerThread
 {
 	GThread *thread;
-	int close;
 	int running;
+	int close;
 };
 
 static struct ListenerThread *lt;
@@ -97,19 +101,28 @@ static int handle_events(int fd, int wd, gpointer data)
 	GString *str;
 
 	if (lt->close == 1)
-		return 1;
+		return 0;
+
+	struct ListenerData *ld = data;
+	InotifyAppWindow *win = INOTIFY_APP_WINDOW(ld->win);
 
 	len = read(fd, buf, sizeof(buf));
 	if (len == -1 && errno != EAGAIN)
 	{
-		perror("read");
+		char *error = g_strdup_printf("perror: %s", strerror(errno));
+		gtk_label_set_text(GTK_LABEL(win->status_bar_err), error);
+
+		if ((gtk_widget_get_visible(win->status_bar_err)) == FALSE)
+			gtk_widget_set_visible(win->status_bar_err, TRUE);
+
+		g_free(error);
+
 		return 0;
 	}
 
 	if (len == -1)
 		return 1;
 
-	struct ListenerData *ld = data;
 	str = g_string_new(NULL);
 
 	for (char *ptr = buf; ptr < buf + len;
@@ -151,27 +164,35 @@ static int handle_events(int fd, int wd, gpointer data)
 		gtk_box_append(GTK_BOX(box), img);
 		gtk_box_append(GTK_BOX(box), label);
 
-		gtk_list_box_append(GTK_LIST_BOX(ld->list), box);
+		gtk_list_box_append(GTK_LIST_BOX(win->list), box);
 		g_string_erase(str, 0, -1);
 
-		int entries = atoi(gtk_label_get_text(GTK_LABEL(ld->entries))) + 1;
+		int entries = atoi(gtk_label_get_text(GTK_LABEL(win->status_bar_entries))) + 1;
 		char *entries_str = g_strdup_printf("%d", entries);
-		gtk_label_set_text(GTK_LABEL(ld->entries), entries_str);
+		gtk_label_set_text(GTK_LABEL(win->status_bar_entries), entries_str);
 		g_free(entries_str);
 
-		if ((gtk_widget_get_sensitive(ld->clear)) == FALSE)
-			gtk_widget_set_sensitive(ld->clear, TRUE);
+		if ((gtk_widget_get_sensitive(win->status_bar_clear)) == FALSE)
+			gtk_widget_set_sensitive(win->status_bar_clear, TRUE);
 
 		if (event->mask & IN_DELETE_SELF)
 		{
-			printf("Listening directory was deleted!");
+			gtk_label_set_text(GTK_LABEL(win->status_bar_err), "Listening directory was deleted!");
+
+			if ((gtk_widget_get_visible(win->status_bar_err)) == FALSE)
+				gtk_widget_set_visible(win->status_bar_err, TRUE);
+
 			g_string_free(str, TRUE);
 			return 0;
 		}
 
 		if (event->mask & IN_MOVE_SELF)
 		{
-			printf("Listening directory was moved!");
+			gtk_label_set_text(GTK_LABEL(win->status_bar_err), "Listening directory was moved!");
+
+			if ((gtk_widget_get_visible(win->status_bar_err)) == FALSE)
+				gtk_widget_set_visible(win->status_bar_err, TRUE);
+
 			g_string_free(str, TRUE);
 			return 0;
 		}
@@ -185,21 +206,30 @@ static gboolean worker_finish_in_idle(gpointer data)
 {
 	struct ListenerData *ld = data;
 	g_free(ld);
-
 	return FALSE;
 }
 
 static gpointer worker(gpointer data)
 {
 	int fd, wd;
-	struct ListenerData *ld;
 
 	fd = inotify_init1(IN_NONBLOCK);
-	ld = data;
+	
+	struct ListenerData *ld = data;
+	InotifyAppWindow *win = INOTIFY_APP_WINDOW(ld->win);
 
 	if (fd == -1)
 	{
-		perror("inotify_init1");
+		char *error = g_strdup_printf("inotify_init1: %s", strerror(errno));
+		gtk_label_set_text(GTK_LABEL(win->status_bar_err), error);
+
+		if ((gtk_widget_get_visible(win->status_bar_err)) == FALSE)
+			gtk_widget_set_visible(win->status_bar_err, TRUE);
+
+		g_free(error);
+
+		lt->running = 0;
+		g_idle_add(worker_finish_in_idle, ld);
 		return NULL;
 	}
 
@@ -208,11 +238,25 @@ static gpointer worker(gpointer data)
 
 	if (wd == -1)
 	{
-		fprintf(stderr, "Can't watch '%s': %s\n",
-				ld->dir, strerror(errno));
+		char *error = g_strdup_printf("Can't watch '%s': %s", ld->dir, strerror(errno));
+		gtk_label_set_text(GTK_LABEL(win->status_bar_err), error);
+
+		if ((gtk_widget_get_visible(win->status_bar_err)) == FALSE)
+			gtk_widget_set_visible(win->status_bar_err, TRUE);
+
+		g_free(error);
 		close(fd);
+
+		lt->running = 0;
+		g_idle_add(worker_finish_in_idle, ld);
 		return NULL;
 	}
+
+	gtk_button_set_label(GTK_BUTTON(win->listening), "Stop listening");
+	gtk_widget_set_sensitive(win->directory_choose, FALSE);
+	gtk_widget_set_sensitive(win->directory_choose_entry, FALSE);
+	gtk_label_set_text(GTK_LABEL(win->status_bar_listening_status), "Listening...");
+	gtk_image_set_from_icon_name(GTK_IMAGE(win->status_bar_listening_image), "gtk-media-record");
 
 	while (1) 
 	{
@@ -228,8 +272,14 @@ static gpointer worker(gpointer data)
 	inotify_rm_watch(fd, wd);
 	close(fd);
 
-	g_idle_add(worker_finish_in_idle, ld);
+	gtk_button_set_label(GTK_BUTTON(win->listening), "Start listening");
+	gtk_widget_set_sensitive(win->directory_choose, TRUE);
+	gtk_widget_set_sensitive(win->directory_choose_entry, TRUE);
+	gtk_label_set_text(GTK_LABEL(win->status_bar_listening_status), "Not listening...");
+	gtk_image_set_from_icon_name(GTK_IMAGE(win->status_bar_listening_image), "gtk-media-stop");
 
+	lt->running = 0;
+	g_idle_add(worker_finish_in_idle, ld);
 	return NULL;
 }
 
@@ -248,12 +298,6 @@ static void listening_clicked(GtkButton *button,
 		lt->close = 1;
 		g_thread_join(lt->thread);
 		g_free(lt);
-
-		gtk_button_set_label(button, "Start listening");
-		gtk_widget_set_sensitive(win->directory_choose, TRUE);
-		gtk_widget_set_sensitive(win->directory_choose_entry, TRUE);
-		gtk_label_set_text(GTK_LABEL(win->status_bar_listening_status), "Not listening...");
-		gtk_image_set_from_icon_name(GTK_IMAGE(win->status_bar_listening_image), "gtk-media-stop");
 	}
 	else
 	{
@@ -263,21 +307,12 @@ static void listening_clicked(GtkButton *button,
 		const char *dir = gtk_entry_buffer_get_text(buffer);
 
 		ld = (struct ListenerData*)g_malloc(sizeof(struct ListenerData));
-		ld->list = win->list;
-		ld->status_bar = win->status_bar;
-		ld->clear = win->status_bar_clear;
-		ld->entries = win->status_bar_entries;
 		ld->dir = dir;
+		ld->win = GTK_WIDGET(win);
 
-		gtk_button_set_label(button, "Stop listening");
-		gtk_widget_set_sensitive(win->directory_choose, FALSE);
-		gtk_widget_set_sensitive(win->directory_choose_entry, FALSE);
-		gtk_label_set_text(GTK_LABEL(win->status_bar_listening_status), "Listening...");
-		gtk_image_set_from_icon_name(GTK_IMAGE(win->status_bar_listening_image), "gtk-media-record");
-
-		lt = g_new(struct ListenerThread, 1);
-		lt->close = 0;
+		lt = (struct ListenerThread*)g_malloc(sizeof(struct ListenerThread));
 		lt->running = 1;
+		lt->close = 0;
 		lt->thread = g_thread_new("worker", worker, (gpointer) ld);
 	}
 }
@@ -301,10 +336,28 @@ static void clear_clicked(GtkButton *button,
 
 	gtk_label_set_text(GTK_LABEL(win->status_bar_entries), "0");
 	gtk_widget_set_sensitive(win->status_bar_clear, TRUE);
+
+	if ((gtk_widget_get_visible(win->status_bar_err)) == TRUE)
+		gtk_widget_set_visible(win->status_bar_err, FALSE);
 }
 
 
 /* }}} */
+
+/* Choose directory entry {{{ */
+
+static void choose_entry_changed(GtkEditable *editable, 
+		gpointer data)
+{
+	InotifyAppWindow *win = INOTIFY_APP_WINDOW(data);
+
+	if ((gtk_widget_get_visible(win->status_bar_err)) == TRUE)
+		gtk_widget_set_visible(win->status_bar_err, FALSE);
+}
+
+/* }}} */
+
+/* Initialization {{{ */
 
 static void inotify_app_window_init(InotifyAppWindow *win)
 {
@@ -328,6 +381,7 @@ static void inotify_app_window_init(InotifyAppWindow *win)
 	g_signal_connect(win->directory_choose, "clicked", G_CALLBACK(directory_choose_clicked), win);
 	g_signal_connect(win->listening, "clicked", G_CALLBACK(listening_clicked), win);
 	g_signal_connect(win->status_bar_clear, "clicked", G_CALLBACK(clear_clicked), win);
+	g_signal_connect(win->directory_choose_entry, "changed", G_CALLBACK(choose_entry_changed), win);
 }
 
 static void inotify_app_window_class_init(InotifyAppWindowClass *class)
@@ -350,3 +404,5 @@ InotifyAppWindow* inotify_app_window_new(InotifyApp *app)
 {
 	return g_object_new(INOTIFY_APP_WINDOW_TYPE, "application", app, NULL);
 }
+
+/* }}} */

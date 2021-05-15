@@ -123,15 +123,17 @@
 								</child>
 							</object>
 						</child>
-						<child>
-							<object class="GtkLabel" id="status_bar_err">
-								<property name="visible">False</property>
-								<property name="margin-start">4</property>
-								<property name="margin-end">4</property>
-								<property name="margin-top">4</property>
-								<property name="margin-bottom">8</property>
-							</object>
-						</child>
+					</object>
+				</child>
+				<child>
+					<object class="GtkLabel" id="status_bar_err">
+						<property name="name">status_bar_err</property>
+						<property name="visible">False</property>
+						<property name="halign">start</property>
+						<property name="margin-start">4</property>
+						<property name="margin-end">4</property>
+						<property name="margin-top">4</property>
+						<property name="margin-bottom">8</property>
 					</object>
 				</child>
 			</object>

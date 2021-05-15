@@ -17,8 +17,19 @@ static void inotify_app_init(InotifyApp *app)
 static void inotify_app_activate(GApplication *app)
 {
 	InotifyAppWindow *win;
+	GtkCssProvider *css;
+	GdkDisplay *display;
+	GtkStyleContext *context;
+
 	win = inotify_app_window_new(INOTIFY_APP(app));
 	gtk_window_present(GTK_WINDOW(win));
+
+	css = gtk_css_provider_new();
+	context = gtk_widget_get_style_context(GTK_WIDGET(win));
+	display = gtk_style_context_get_display(context);
+
+	gtk_css_provider_load_from_resource(css, "/org/gtk/inotifyapp/custom.css");
+	gtk_style_context_add_provider_for_display(display, GTK_STYLE_PROVIDER(css), GTK_STYLE_PROVIDER_PRIORITY_USER);
 }
 
 static void inotify_app_open(GApplication *app, 
@@ -27,8 +38,19 @@ static void inotify_app_open(GApplication *app,
 		const char *hint)
 {
 	InotifyAppWindow *win;
+	GtkCssProvider *css;
+	GdkDisplay *display;
+	GtkStyleContext *context;
+
 	win = inotify_app_window_new(INOTIFY_APP(app));
 	gtk_window_present(GTK_WINDOW(win));
+	
+	css = gtk_css_provider_new();
+	context = gtk_widget_get_style_context(GTK_WIDGET(win));
+	display = gtk_style_context_get_display(context);
+
+	gtk_css_provider_load_from_resource(css, "/org/gtk/inotifyapp/custom.css");
+	gtk_style_context_add_provider_for_display(display, GTK_STYLE_PROVIDER(css), GTK_STYLE_PROVIDER_PRIORITY_USER);
 }
 
 static void inotify_app_class_init(InotifyAppClass *class)

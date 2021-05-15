@@ -1,0 +1,4 @@
+#status_bar_err {
+	color: @error_color;
+	font-weight: bold;
+}
