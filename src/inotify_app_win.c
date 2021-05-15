@@ -9,6 +9,7 @@
 #include <sys/inotify.h>
 #include <sys/poll.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 #include "inotify_app.h"
 #include "inotify_app_win.h"
@@ -144,7 +145,10 @@ static int handle_events(int fd, int wd, gpointer data)
 		event_case(str, event->mask, IN_MOVE_SELF);
 		event_case(str, event->mask, IN_CREATE);
 
-		g_string_append_printf(str, "%s/", ld->dir);
+		if (ld->dir[strlen(ld->dir) - 1] == '/')
+			g_string_append(str, ld->dir);
+		else
+			g_string_append_printf(str, "%s/", ld->dir);
 
 		if (event->len)
 			g_string_append_printf(str, "%s", event->name);
@@ -239,6 +243,25 @@ static gpointer worker(gpointer data)
 	if (wd == -1)
 	{
 		char *error = g_strdup_printf("Can't watch '%s': %s", ld->dir, strerror(errno));
+		gtk_label_set_text(GTK_LABEL(win->status_bar_err), error);
+
+		if ((gtk_widget_get_visible(win->status_bar_err)) == FALSE)
+			gtk_widget_set_visible(win->status_bar_err, TRUE);
+
+		g_free(error);
+		close(fd);
+
+		lt->running = 0;
+		g_idle_add(worker_finish_in_idle, ld);
+		return NULL;
+	}
+
+	struct stat dir_stat;
+	stat(ld->dir, &dir_stat);
+
+	if (!S_ISDIR(dir_stat.st_mode))
+	{
+		char *error = g_strdup_printf("Can't watch '%s': it is not directory!", ld->dir);
 		gtk_label_set_text(GTK_LABEL(win->status_bar_err), error);
 
 		if ((gtk_widget_get_visible(win->status_bar_err)) == FALSE)
@@ -403,6 +426,22 @@ static void inotify_app_window_class_init(InotifyAppWindowClass *class)
 InotifyAppWindow* inotify_app_window_new(InotifyApp *app)
 {
 	return g_object_new(INOTIFY_APP_WINDOW_TYPE, "application", app, NULL);
+}
+
+void inotify_app_window_open(InotifyAppWindow *win, GFile *file)
+{
+	GtkEntry *entry;
+	GtkEntryBuffer *buffer;
+	char *dir;
+
+	entry = GTK_ENTRY(win->directory_choose_entry);
+	buffer = gtk_entry_get_buffer(entry);
+	dir = g_file_get_path(file);
+
+	if (dir != NULL)
+		gtk_entry_buffer_set_text(buffer, dir, -1);
+	else
+		gtk_entry_buffer_set_text(buffer, "", -1);
 }
 
 /* }}} */
