@@ -28,13 +28,18 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(GTK4 REQUIRED gtk4)
 add_definitions(${GTK4_CFLAGS_OTHER})
 
+# Load libmagic
+find_library(MAGIC_LIBRARY magic)
+
 # Set working dirs
 set(RESOURCES_DIR ${CMAKE_SOURCE_DIR}/resources)
 set(SRC_DIR ${CMAKE_SOURCE_DIR}/src)
 
 set(WORKING_DIRS 
 	${SRC_DIR}
-	${GTK4_INCLUDE_DIRS})
+	${GTK4_INCLUDE_DIRS}
+	${MAGIC_LIBRARY_DIR}
+)
 
 # glib-compile-resources
 find_program(GLIB_COMPILE_RESOURCES NAMES glib-compile-resources REQUIRED)
@@ -67,7 +72,12 @@ add_library(base STATIC
 	${SRC_DIR}/inotify_app.c
 	${SRC_DIR}/inotify_app_win.c
 )
-target_link_libraries(base ${GTK4_LIBRARIES})
+
+target_link_libraries(base 
+	${GTK4_LIBRARIES}
+	${MAGIC_LIBRARY}
+)
+
 target_include_directories(base PUBLIC ${WORKING_DIRS})
 
 # Exec

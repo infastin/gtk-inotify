@@ -1,5 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <interface>
+	<object class="GtkListStore" id="liststore1">
+		<columns>
+			<column type="GIcon"/>
+			<column type="gchararray"/>
+			<column type="gchararray"/>
+			<column type="gchararray"/>
+		</columns>
+	</object>
+	<object class="GtkListStore" id="liststore2">
+		<columns>
+			<column type="gchararray"/>
+			<column type="gchararray"/>
+		</columns>
+	</object>
 	<template class="InotifyAppWindow" parent="GtkApplicationWindow">
 		<property name="title" translatable="yes">inotify</property>
 		<property name="default-width">600</property>
@@ -54,71 +68,172 @@
 					</object>
 				</child>
 				<child>
-					<object class="GtkScrolledWindow">
+					<object class="GtkBox">
 						<property name="margin-start">4</property>
 						<property name="margin-end">4</property>
 						<property name="margin-top">4</property>
 						<property name="margin-bottom">4</property>
+						<property name="spacing">4</property>
 						<property name="vexpand">True</property>
+						<property name="orientation">vertical</property>
 						<child>
-							<object class="GtkViewport">
-								<property name="vexpand">True</property>
-								<child>
-									<object class="GtkListBox" id="list">
-										<property name="vexpand">True</property>
-									</object>
-								</child>
+							<object class="GtkStackSwitcher">
+								<property name="stack">stack1</property>
+								<property name="halign">center</property>
 							</object>
 						</child>
-					</object>
-				</child>
-				<child>
-					<object class="GtkBox" id="status_bar">
-						<property name="spacing">4</property>
-						<property name="margin-start">4</property>
-						<property name="margin-end">4</property>
-						<property name="margin-top">4</property>
-						<property name="margin-bottom">8</property>
 						<child>
-							<object class="GtkBox">
+							<object class="GtkStack" id="stack1">
+								<property name="vexpand">True</property>
 								<child>
-									<object class="GtkBox">
-										<property name="halign">start</property>
-										<property name="hexpand">True</property>
-										<child>
-											<object class="GtkLabel">
-												<property name="label">Entries: </property>
+									<object class="GtkStackPage">
+										<property name="name">page1</property>
+										<property name="title">View</property>
+										<property name="child">
+											<object class="GtkBox">
+												<property name="vexpand">True</property>
+												<property name="orientation">vertical</property>
+												<child>
+													<object class="GtkScrolledWindow">
+														<property name="vexpand">True</property>
+														<child>
+															<object class="GtkTreeView" id="view">
+																<property name="vexpand">True</property>
+																<property name="model">liststore1</property>
+																<property name="margin-start">10</property>
+																<property name="margin-end">10</property>
+															</object>
+														</child>
+													</object>
+												</child>
+												<child>
+													<object class="GtkBox" id="view_status_bar">
+														<property name="spacing">4</property>
+														<property name="margin-start">4</property>
+														<property name="margin-end">4</property>
+														<property name="margin-top">8</property>
+														<property name="margin-bottom">8</property>
+														<child>
+															<object class="GtkBox">
+																<child>
+																	<object class="GtkBox">
+																		<property name="halign">start</property>
+																		<property name="hexpand">True</property>
+																		<child>
+																			<object class="GtkLabel">
+																				<property name="label">Contents: </property>
+																				<property name="sensitive">False</property>
+																			</object>
+																		</child>
+																		<child>
+																			<object class="GtkLabel" id="view_status_bar_contents">
+																				<property name="label">0</property>
+																			</object>
+																		</child>
+																	</object>
+																</child>
+																<child>
+																	<object class="GtkBox">
+																		<property name="halign">start</property>
+																		<child>
+																			<object class="GtkLabel">
+																				<property name="label">Modified: </property>
+																				<property name="sensitive">False</property>
+																			</object>
+																		</child>
+																		<child>
+																			<object class="GtkLabel" id="view_status_bar_modified">
+																				<property name="label">0</property>
+																			</object>
+																		</child>
+																	</object>
+																</child>
+															</object>
+														</child>
+													</object>
+												</child>
 											</object>
-										</child>
-										<child>
-											<object class="GtkLabel" id="status_bar_entries">
-												<property name="label">0</property>
-											</object>
-										</child>
+										</property>
 									</object>
 								</child>
 								<child>
-									<object class="GtkBox">
-										<property name="hexpand">True</property>
-										<property name="spacing">4</property>
-										<child>
-											<object class="GtkImage" id="status_bar_listening_image">
-												<property name="icon-name">gtk-media-stop</property>
+									<object class="GtkStackPage">
+										<property name="name">page2</property>
+										<property name="title">Events</property>
+										<property name="child">
+											<object class="GtkBox">
+												<property name="vexpand">True</property>
+												<property name="orientation">vertical</property>
+												<child>
+													<object class="GtkScrolledWindow">
+														<property name="vexpand">True</property>
+															<child>
+																<object class="GtkTreeView" id="list">
+																	<property name="vexpand">True</property>
+																	<property name="model">liststore2</property>
+																	<property name="margin-start">10</property>
+																	<property name="margin-end">10</property>
+																</object>
+															</child>
+													</object>
+												</child>
+												<child>
+													<object class="GtkBox" id="status_bar">
+														<property name="spacing">4</property>
+														<property name="margin-start">4</property>
+														<property name="margin-end">4</property>
+														<property name="margin-top">8</property>
+														<property name="margin-bottom">8</property>
+														<child>
+															<object class="GtkBox">
+																<child>
+																	<object class="GtkBox">
+																		<property name="halign">start</property>
+																		<property name="hexpand">True</property>
+																		<child>
+																			<object class="GtkLabel">
+																				<property name="label">Entries: </property>
+																				<property name="sensitive">False</property>
+																			</object>
+																		</child>
+																		<child>
+																			<object class="GtkLabel" id="status_bar_entries">
+																				<property name="label">0</property>
+																			</object>
+																		</child>
+																	</object>
+																</child>
+																<child>
+																	<object class="GtkBox">
+																		<property name="hexpand">True</property>
+																		<property name="spacing">4</property>
+																		<child>
+																			<object class="GtkImage" id="status_bar_listening_image">
+																				<property name="icon-name">gtk-media-stop</property>
+																			</object>
+																		</child>
+																		<child>
+																			<object class="GtkLabel" id="status_bar_listening_status">
+																				<property name="label">Not listening...</property>
+																			</object>
+																		</child>
+																	</object>
+																</child>
+																<child>
+																	<object class="GtkButton" id="status_bar_clear">
+																		<property name="name">status_bar_clear</property>
+																		<property name="label">_Clear list</property>
+																		<property name="sensitive">False</property>
+																		<property name="use-underline">True</property>
+																		<property name="halign">end</property>
+																	</object>
+																</child>
+															</object>
+														</child>
+													</object>
+												</child>
 											</object>
-										</child>
-										<child>
-											<object class="GtkLabel" id="status_bar_listening_status">
-												<property name="label">Not listening...</property>
-											</object>
-										</child>
-									</object>
-								</child>
-								<child>
-									<object class="GtkButton" id="status_bar_clear">
-										<property name="label">_Clear list</property>
-										<property name="sensitive">False</property>
-										<property name="use-underline">True</property>
-										<property name="halign">end</property>
+										</property>
 									</object>
 								</child>
 							</object>

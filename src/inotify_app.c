@@ -39,6 +39,9 @@ static void inotify_app_open(GApplication *app,
 {
 	GList *windows;
 	InotifyAppWindow *win;
+	GtkCssProvider *css;
+	GdkDisplay *display;
+	GtkStyleContext *context;
 
 	windows = gtk_application_get_windows (GTK_APPLICATION (app));
 	if (windows)
@@ -50,6 +53,13 @@ static void inotify_app_open(GApplication *app,
 		inotify_app_window_open(win, files[0]);
 
 	gtk_window_present(GTK_WINDOW(win));
+
+	css = gtk_css_provider_new();
+	context = gtk_widget_get_style_context(GTK_WIDGET(win));
+	display = gtk_style_context_get_display(context);
+
+	gtk_css_provider_load_from_resource(css, "/org/gtk/inotifyapp/custom.css");
+	gtk_style_context_add_provider_for_display(display, GTK_STYLE_PROVIDER(css), GTK_STYLE_PROVIDER_PRIORITY_USER);
 }
 
 static void inotify_app_class_init(InotifyAppClass *class)
