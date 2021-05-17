@@ -245,8 +245,8 @@
 						<property name="name">status_bar_err</property>
 						<property name="visible">False</property>
 						<property name="halign">start</property>
-						<property name="margin-start">4</property>
-						<property name="margin-end">4</property>
+						<property name="margin-start">8</property>
+						<property name="margin-end">8</property>
 						<property name="margin-top">4</property>
 						<property name="margin-bottom">8</property>
 					</object>
