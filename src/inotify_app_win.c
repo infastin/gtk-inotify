@@ -1,6 +1,5 @@
 /* vim: set fdm=marker : */
 
-#include <signal.h>
 #include <sys/eventfd.h>
 #include <dirent.h>
 #include <errno.h>
@@ -20,7 +19,6 @@
 
 #include "inotify_app.h"
 #include "inotify_app_win.h"
-#include "pango/pango-layout.h"
 
 /* Definitions {{{ */
 
@@ -40,6 +38,9 @@ struct _InotifyAppWindow
 	GtkWidget *status_bar_err;
 	GtkWidget *view_status_bar_contents;
 	GtkWidget *view_status_bar_modified;
+	GtkWidget *stack1;
+	GtkWidget *page1;
+	GtkWidget *page2;
 };
 
 G_DEFINE_TYPE(InotifyAppWindow, inotify_app_window, GTK_TYPE_APPLICATION_WINDOW);
@@ -83,6 +84,409 @@ static void directory_choose_clicked(GtkButton *button,
 
 	if ((gtk_widget_get_visible(win->status_bar_err)) == TRUE)
 		gtk_widget_set_visible(win->status_bar_err, FALSE);
+}
+
+/* }}} */
+
+/* Listening {{{ */
+
+#define event_case(str, mask, ev) if (mask & ev) str = #ev;
+
+struct ListenerData
+{
+	GtkWidget *win;
+	const char *dir;
+};
+
+struct ListenerThread
+{
+	GThread *thread;
+	int efd;
+	int running;
+	int close;
+};
+
+struct ListenerLabelData
+{
+	GtkWidget *label;
+	GtkWidget *clear;
+	int count;
+};
+
+struct ListenerErrorData
+{
+	GtkWidget *label;
+	char *error;
+};
+
+static struct ListenerThread *lt;
+
+static gboolean worker_finish_in_idle(gpointer data)
+{
+	struct ListenerData *ld = data;
+	g_free(ld);
+	return FALSE;
+}
+
+static gboolean worker_set_err(gpointer data)
+{
+	struct ListenerErrorData *led = data;
+	
+	gtk_label_set_text(GTK_LABEL(led->label), led->error);
+	if ((gtk_widget_get_visible(led->label)) == FALSE)
+		gtk_widget_set_visible(led->label, TRUE);
+
+	g_free(led->error);
+	g_free(data);
+
+	return FALSE;
+}
+
+static gboolean worker_update_label(gpointer data)
+{
+	struct ListenerLabelData *lld = data;
+
+	int entries = atoi(gtk_label_get_text(GTK_LABEL(lld->label))) + lld->count;
+	char *entries_str = g_strdup_printf("%d", entries);
+	gtk_label_set_text(GTK_LABEL(lld->label), entries_str);
+	g_free(entries_str);
+
+	if ((gtk_widget_get_sensitive(lld->clear)) == FALSE)
+		gtk_widget_set_sensitive(lld->clear, TRUE);
+
+	g_free(data);
+
+	return FALSE;
+}
+
+static gboolean worker_gui_set_stop(gpointer data)
+{
+	struct ListenerData *ld = data;
+	InotifyAppWindow *win = INOTIFY_APP_WINDOW(ld->win);
+
+	gtk_button_set_label(GTK_BUTTON(win->listening), "Stop listening");
+	gtk_widget_set_sensitive(win->directory_choose, FALSE);
+	gtk_widget_set_sensitive(win->directory_choose_entry, FALSE);
+	gtk_label_set_text(GTK_LABEL(win->status_bar_listening_status), "Listening...");
+	gtk_image_set_from_icon_name(GTK_IMAGE(win->status_bar_listening_image), "gtk-media-record");
+
+	return FALSE;
+}
+
+static gboolean worker_gui_set_start(gpointer data)
+{
+	struct ListenerData *ld = data;
+	InotifyAppWindow *win = INOTIFY_APP_WINDOW(ld->win);
+
+	gtk_button_set_label(GTK_BUTTON(win->listening), "Start listening");
+	gtk_widget_set_sensitive(win->directory_choose, TRUE);
+	gtk_widget_set_sensitive(win->directory_choose_entry, TRUE);
+	gtk_label_set_text(GTK_LABEL(win->status_bar_listening_status), "Not listening...");
+	gtk_image_set_from_icon_name(GTK_IMAGE(win->status_bar_listening_image), "gtk-media-stop");
+
+	return FALSE;
+}
+
+static gboolean worker_switch_page(gpointer data)
+{
+	struct ListenerData *ld = data;
+	InotifyAppWindow *win = INOTIFY_APP_WINDOW(ld->win);
+
+	gtk_stack_set_visible_child(GTK_STACK(win->stack1), win->page2);
+
+	return FALSE;
+}
+
+static int handle_events(int fd, int wd, gpointer data)
+{
+	char buf[4096] __attribute ((aligned(__alignof__(struct inotify_event))));
+	const struct inotify_event *event;
+	ssize_t len;
+	GString *str;
+	GtkTreeView *list;
+	GtkTreeModel *model;
+	GtkListStore *store;
+
+	if (lt->close == 1)
+		return 0;
+
+	struct ListenerData *ld = data;
+	InotifyAppWindow *win = INOTIFY_APP_WINDOW(ld->win);
+
+	len = read(fd, buf, sizeof(buf));
+	if (len == -1 && errno != EAGAIN)
+	{
+		char *error = g_strdup_printf("perror: %s", strerror(errno));
+		struct ListenerErrorData *err = g_new(struct ListenerErrorData, 1);
+		err->error = error;
+		err->label = win->status_bar_err;
+
+		g_idle_add(worker_set_err, err);
+
+		return -1;
+	}
+
+	if (len == -1)
+		return 0;
+
+	list = GTK_TREE_VIEW(win->list);
+	model = gtk_tree_view_get_model(list);
+	store = GTK_LIST_STORE(model);
+
+	str = g_string_new(NULL);
+
+	int count = 0;
+
+	for (char *ptr = buf; ptr < buf + len;
+			ptr += sizeof(struct inotify_event) + event->len, ++count)
+	{
+		if (lt->close == 1)
+			break;
+
+		GtkTreeIter iter;
+		char *ev_str = "";
+
+		event = (const struct inotify_event*) ptr;
+
+		event_case(ev_str, event->mask, IN_OPEN);
+		event_case(ev_str, event->mask, IN_CLOSE_NOWRITE);
+		event_case(ev_str, event->mask, IN_CLOSE_WRITE);
+		event_case(ev_str, event->mask, IN_MOVED_FROM);
+		event_case(ev_str, event->mask, IN_MOVED_TO);
+		event_case(ev_str, event->mask, IN_DELETE);
+		event_case(ev_str, event->mask, IN_DELETE_SELF);
+		event_case(ev_str, event->mask, IN_MODIFY);
+		event_case(ev_str, event->mask, IN_MOVE_SELF);
+		event_case(ev_str, event->mask, IN_CREATE);
+
+		if (ld->dir[strlen(ld->dir) - 1] == '/')
+			g_string_append(str, ld->dir);
+		else
+			g_string_append_printf(str, "%s/", ld->dir);
+
+		if (event->len)
+			g_string_append_printf(str, "%s", event->name);
+
+		gtk_list_store_append(store, &iter);
+		gtk_list_store_set(store, &iter,
+				0, ev_str,
+				1, str->str,
+				-1);
+
+		g_string_erase(str, 0, -1);
+
+		if (event->mask & IN_DELETE_SELF)
+		{
+			struct ListenerErrorData *err = g_new(struct ListenerErrorData, 1);
+			err->error =  g_strdup("Listening directory was deleted!");
+			err->label = win->status_bar_err;
+
+			g_idle_add(worker_set_err, err);
+
+			g_string_free(str, TRUE);
+			return -1;
+		}
+
+		if (event->mask & IN_MOVE_SELF)
+		{
+			struct ListenerErrorData *err = g_new(struct ListenerErrorData, 1);
+			err->error =  g_strdup("Listening directory was moved!");
+			err->label = win->status_bar_err;
+
+			g_idle_add(worker_set_err, err);
+
+			g_string_free(str, TRUE);
+			return -1;
+		}
+	}
+
+	g_string_free(str, TRUE);
+	return count;
+}
+
+static gpointer worker(gpointer data)
+{
+	int fd, wd;
+	struct ListenerData *ld;
+	InotifyAppWindow *win;
+
+	fd = inotify_init1(IN_NONBLOCK);
+	
+	ld = data;
+	win = INOTIFY_APP_WINDOW(ld->win);
+
+	if (fd == -1)
+	{
+		char *error = g_strdup_printf("inotify_init1: %s", strerror(errno));
+		struct ListenerErrorData *err = g_new(struct ListenerErrorData, 1);
+		err->error = error;
+		err->label = win->status_bar_err;
+
+		g_idle_add(worker_set_err, err);
+
+		lt->running = 0;
+		g_idle_add(worker_finish_in_idle, ld);
+		return NULL;
+	}
+
+	wd = inotify_add_watch(fd, ld->dir, 
+			IN_OPEN | IN_CLOSE | IN_MOVE | IN_CREATE | IN_DELETE | IN_DELETE_SELF | IN_MODIFY | IN_MOVE_SELF);
+
+	if (wd == -1)
+	{
+		char *error = g_strdup_printf("Can't watch '%s': %s", ld->dir, strerror(errno));
+		struct ListenerErrorData *err = g_new(struct ListenerErrorData, 1);
+		err->error = error;
+		err->label = win->status_bar_err;
+
+		g_idle_add(worker_set_err, err);
+		
+		close(fd);
+
+		lt->running = 0;
+		g_idle_add(worker_finish_in_idle, ld);
+		return NULL;
+	}
+
+	struct stat dir_stat;
+	stat(ld->dir, &dir_stat);
+
+	if (!S_ISDIR(dir_stat.st_mode))
+	{
+		char *error = g_strdup_printf("Can't watch '%s': it is not directory!", ld->dir);
+		struct ListenerErrorData *err = g_new(struct ListenerErrorData, 1);
+		err->error = error;
+		err->label = win->status_bar_err;
+
+		g_idle_add(worker_set_err, err);
+
+		close(fd);
+
+		lt->running = 0;
+		g_idle_add(worker_finish_in_idle, ld);
+		return NULL;
+	}
+
+	g_idle_add(worker_gui_set_stop, ld);
+	g_idle_add(worker_switch_page, ld);
+
+	int poll_num;
+	nfds_t nfds;
+	struct pollfd fds[2];
+
+	nfds = 2;
+
+	fds[0].fd = lt->efd;
+	fds[0].events = POLLIN;
+
+	fds[1].fd = fd;
+	fds[1].events = POLLIN;
+
+	while (1) 
+	{
+		if (lt->close == 1)
+			break;
+
+		poll_num = poll(fds, nfds, -1);
+		if (poll_num == -1)
+		{
+			if (errno == EINTR)
+				continue;
+
+			char *error = g_strdup_printf("poll: %s", strerror(errno));
+			struct ListenerErrorData *err = g_new(struct ListenerErrorData, 1);
+			err->error = error;
+			err->label = win->status_bar_err;
+
+			g_idle_add(worker_set_err, err);
+
+			break;
+		}
+
+		if (poll_num > 0) 
+		{
+			if (fds[0].revents & POLLIN) 
+			{
+				break;
+			}
+
+			if (fds[1].revents & POLLIN) 
+			{
+				int res = handle_events(fd, wd, ld);
+
+				if (res == -1)
+					break;
+
+				struct ListenerLabelData *lld = g_new(struct ListenerLabelData, 1);
+				lld->label = win->status_bar_entries;
+				lld->count = res;
+				lld->clear = win->status_bar_clear;
+
+				g_idle_add(worker_update_label, lld);
+			}
+		}
+	}
+
+	inotify_rm_watch(fd, wd);
+	close(fd);
+
+	g_idle_add(worker_gui_set_start, ld);
+
+	lt->running = 0;
+	g_idle_add(worker_finish_in_idle, ld);
+	return NULL;
+}
+
+static void listening_clicked(GtkButton *button,
+		gpointer data)
+{
+	InotifyAppWindow *win;
+
+	win = INOTIFY_APP_WINDOW(data);
+	
+	if (lt && lt->running == 1)
+	{
+		eventfd_write(lt->efd, 1);
+		g_thread_join(lt->thread);
+		close(lt->efd);
+		g_free(lt);
+	}
+	else
+	{
+		GtkEntry *entry;
+		GtkEntryBuffer *buffer;
+		struct ListenerData *ld;
+		int efd;
+
+		efd = eventfd(0, 0);
+
+		if (efd == -1)
+		{
+			char *error = g_strdup_printf("eventfd: %s", strerror(errno));
+			gtk_label_set_text(GTK_LABEL(win->status_bar_err), error);
+
+			if ((gtk_widget_get_visible(win->status_bar_err)) == FALSE)
+				gtk_widget_set_visible(win->status_bar_err, TRUE);
+
+			g_free(error);
+			return;
+		}
+
+		entry = GTK_ENTRY(win->directory_choose_entry);
+		buffer = gtk_entry_get_buffer(entry);
+
+		const char *dir = gtk_entry_buffer_get_text(buffer);
+
+		ld = (struct ListenerData*)g_malloc(sizeof(struct ListenerData));
+		ld->dir = dir;
+		ld->win = GTK_WIDGET(win);
+
+		lt = (struct ListenerThread*)g_malloc(sizeof(struct ListenerThread));
+		lt->running = 1;
+		lt->close = 0;
+		lt->efd = efd;
+		lt->thread = g_thread_new("worker", worker, (gpointer) ld);
+	}
 }
 
 /* }}} */
@@ -362,410 +766,21 @@ void view_row_activated(GtkTreeView *view,
 		GtkTreeViewColumn *column,
 		gpointer data)
 {
-	InotifyAppWindow *win = INOTIFY_APP_WINDOW(data);
-	GtkTreeIter iter;
-	GtkTreeModel *model = gtk_tree_view_get_model(view);
-
-	char *name, *full;
-
-	if (gtk_tree_model_get_iter(model, &iter, path))
+	if (!lt)
 	{
-		gtk_tree_model_get(model, &iter, 1, &name, -1);
-		full = realpath(name, NULL);
-		update_view(win, full, TRUE);
-		g_free(full);
-	}
-}
-
-/* }}} */
-
-/* Listening {{{ */
-
-#define event_case(str, mask, ev) if (mask & ev) str = #ev;
-
-struct ListenerData
-{
-	GtkWidget *win;
-	const char *dir;
-};
-
-struct ListenerThread
-{
-	GThread *thread;
-	int efd;
-	int running;
-	int close;
-};
-
-struct ListenerLabelData
-{
-	GtkWidget *label;
-	GtkWidget *clear;
-	int count;
-};
-
-struct ListenerErrorData
-{
-	GtkWidget *label;
-	char *error;
-};
-
-static struct ListenerThread *lt;
-
-static gboolean worker_finish_in_idle(gpointer data)
-{
-	struct ListenerData *ld = data;
-	g_free(ld);
-	return FALSE;
-}
-
-static gboolean worker_set_err(gpointer data)
-{
-	struct ListenerErrorData *led = data;
-	
-	gtk_label_set_text(GTK_LABEL(led->label), led->error);
-	if ((gtk_widget_get_visible(led->label)) == FALSE)
-		gtk_widget_set_visible(led->label, TRUE);
-
-	g_free(led->error);
-	g_free(data);
-
-	return FALSE;
-}
-
-static gboolean worker_update_label(gpointer data)
-{
-	struct ListenerLabelData *lld = data;
-
-	int entries = atoi(gtk_label_get_text(GTK_LABEL(lld->label))) + lld->count;
-	char *entries_str = g_strdup_printf("%d", entries);
-	gtk_label_set_text(GTK_LABEL(lld->label), entries_str);
-	g_free(entries_str);
-
-	if ((gtk_widget_get_sensitive(lld->clear)) == FALSE)
-		gtk_widget_set_sensitive(lld->clear, TRUE);
-
-	g_free(data);
-
-	return FALSE;
-}
-
-static gboolean worker_gui_set_stop(gpointer data)
-{
-	struct ListenerData *ld = data;
-	InotifyAppWindow *win = INOTIFY_APP_WINDOW(ld->win);
-
-	gtk_button_set_label(GTK_BUTTON(win->listening), "Stop listening");
-	gtk_widget_set_sensitive(win->directory_choose, FALSE);
-	gtk_widget_set_sensitive(win->directory_choose_entry, FALSE);
-	gtk_label_set_text(GTK_LABEL(win->status_bar_listening_status), "Listening...");
-	gtk_image_set_from_icon_name(GTK_IMAGE(win->status_bar_listening_image), "gtk-media-record");
-
-	return FALSE;
-}
-
-static gboolean worker_gui_set_start(gpointer data)
-{
-	struct ListenerData *ld = data;
-	InotifyAppWindow *win = INOTIFY_APP_WINDOW(ld->win);
-
-	gtk_button_set_label(GTK_BUTTON(win->listening), "Start listening");
-	gtk_widget_set_sensitive(win->directory_choose, TRUE);
-	gtk_widget_set_sensitive(win->directory_choose_entry, TRUE);
-	gtk_label_set_text(GTK_LABEL(win->status_bar_listening_status), "Not listening...");
-	gtk_image_set_from_icon_name(GTK_IMAGE(win->status_bar_listening_image), "gtk-media-stop");
-
-	return FALSE;
-}
-
-static int handle_events(int fd, int wd, gpointer data)
-{
-	char buf[4096] __attribute ((aligned(__alignof__(struct inotify_event))));
-	const struct inotify_event *event;
-	ssize_t len;
-	GString *str;
-	GtkTreeView *list;
-	GtkTreeModel *model;
-	GtkListStore *store;
-
-	if (lt->close == 1)
-		return 0;
-
-	struct ListenerData *ld = data;
-	InotifyAppWindow *win = INOTIFY_APP_WINDOW(ld->win);
-
-	len = read(fd, buf, sizeof(buf));
-	if (len == -1 && errno != EAGAIN)
-	{
-		char *error = g_strdup_printf("perror: %s", strerror(errno));
-		struct ListenerErrorData *err = g_new(struct ListenerErrorData, 1);
-		err->error = error;
-		err->label = win->status_bar_err;
-
-		g_idle_add(worker_set_err, err);
-
-		return -1;
-	}
-
-	if (len == -1)
-		return 0;
-
-	list = GTK_TREE_VIEW(win->list);
-	model = gtk_tree_view_get_model(list);
-	store = GTK_LIST_STORE(model);
-
-	str = g_string_new(NULL);
-
-	int count = 0;
-
-	for (char *ptr = buf; ptr < buf + len;
-			ptr += sizeof(struct inotify_event) + event->len, ++count)
-	{
-		if (lt->close == 1)
-			break;
-
+		InotifyAppWindow *win = INOTIFY_APP_WINDOW(data);
 		GtkTreeIter iter;
-		char *ev_str = "";
+		GtkTreeModel *model = gtk_tree_view_get_model(view);
 
-		event = (const struct inotify_event*) ptr;
+		char *name, *full;
 
-		event_case(ev_str, event->mask, IN_OPEN);
-		event_case(ev_str, event->mask, IN_CLOSE_NOWRITE);
-		event_case(ev_str, event->mask, IN_CLOSE_WRITE);
-		event_case(ev_str, event->mask, IN_MOVED_FROM);
-		event_case(ev_str, event->mask, IN_MOVED_TO);
-		event_case(ev_str, event->mask, IN_DELETE);
-		event_case(ev_str, event->mask, IN_DELETE_SELF);
-		event_case(ev_str, event->mask, IN_MODIFY);
-		event_case(ev_str, event->mask, IN_MOVE_SELF);
-		event_case(ev_str, event->mask, IN_CREATE);
-
-		if (ld->dir[strlen(ld->dir) - 1] == '/')
-			g_string_append(str, ld->dir);
-		else
-			g_string_append_printf(str, "%s/", ld->dir);
-
-		if (event->len)
-			g_string_append_printf(str, "%s", event->name);
-
-		gtk_list_store_append(store, &iter);
-		gtk_list_store_set(store, &iter,
-				0, ev_str,
-				1, str->str,
-				-1);
-
-		g_string_erase(str, 0, -1);
-
-		if (event->mask & IN_DELETE_SELF)
+		if (gtk_tree_model_get_iter(model, &iter, path))
 		{
-			struct ListenerErrorData *err = g_new(struct ListenerErrorData, 1);
-			err->error =  g_strdup("Listening directory was deleted!");
-			err->label = win->status_bar_err;
-
-			g_idle_add(worker_set_err, err);
-
-			g_string_free(str, TRUE);
-			return -1;
+			gtk_tree_model_get(model, &iter, 1, &name, -1);
+			full = realpath(name, NULL);
+			update_view(win, full, TRUE);
+			g_free(full);
 		}
-
-		if (event->mask & IN_MOVE_SELF)
-		{
-			struct ListenerErrorData *err = g_new(struct ListenerErrorData, 1);
-			err->error =  g_strdup("Listening directory was moved!");
-			err->label = win->status_bar_err;
-
-			g_idle_add(worker_set_err, err);
-
-			g_string_free(str, TRUE);
-			return -1;
-		}
-	}
-
-	g_string_free(str, TRUE);
-	return count;
-}
-
-static gpointer worker(gpointer data)
-{
-	int fd, wd;
-	struct ListenerData *ld;
-	InotifyAppWindow *win;
-
-	fd = inotify_init1(IN_NONBLOCK);
-	
-	ld = data;
-	win = INOTIFY_APP_WINDOW(ld->win);
-
-	if (fd == -1)
-	{
-		char *error = g_strdup_printf("inotify_init1: %s", strerror(errno));
-		struct ListenerErrorData *err = g_new(struct ListenerErrorData, 1);
-		err->error = error;
-		err->label = win->status_bar_err;
-
-		g_idle_add(worker_set_err, err);
-
-		lt->running = 0;
-		g_idle_add(worker_finish_in_idle, ld);
-		return NULL;
-	}
-
-	wd = inotify_add_watch(fd, ld->dir, 
-			IN_OPEN | IN_CLOSE | IN_MOVE | IN_CREATE | IN_DELETE | IN_DELETE_SELF | IN_MODIFY | IN_MOVE_SELF);
-
-	if (wd == -1)
-	{
-		char *error = g_strdup_printf("Can't watch '%s': %s", ld->dir, strerror(errno));
-		struct ListenerErrorData *err = g_new(struct ListenerErrorData, 1);
-		err->error = error;
-		err->label = win->status_bar_err;
-
-		g_idle_add(worker_set_err, err);
-		
-		close(fd);
-
-		lt->running = 0;
-		g_idle_add(worker_finish_in_idle, ld);
-		return NULL;
-	}
-
-	struct stat dir_stat;
-	stat(ld->dir, &dir_stat);
-
-	if (!S_ISDIR(dir_stat.st_mode))
-	{
-		char *error = g_strdup_printf("Can't watch '%s': it is not directory!", ld->dir);
-		struct ListenerErrorData *err = g_new(struct ListenerErrorData, 1);
-		err->error = error;
-		err->label = win->status_bar_err;
-
-		g_idle_add(worker_set_err, err);
-
-		close(fd);
-
-		lt->running = 0;
-		g_idle_add(worker_finish_in_idle, ld);
-		return NULL;
-	}
-
-	g_idle_add(worker_gui_set_stop, ld);
-
-	int poll_num;
-	nfds_t nfds;
-	struct pollfd fds[2];
-
-	nfds = 2;
-
-	fds[0].fd = lt->efd;
-	fds[0].events = POLLIN;
-
-	fds[1].fd = fd;
-	fds[1].events = POLLIN;
-
-	while (1) 
-	{
-		if (lt->close == 1)
-			break;
-
-		poll_num = poll(fds, nfds, -1);
-		if (poll_num == -1)
-		{
-			if (errno == EINTR)
-				continue;
-
-			char *error = g_strdup_printf("poll: %s", strerror(errno));
-			struct ListenerErrorData *err = g_new(struct ListenerErrorData, 1);
-			err->error = error;
-			err->label = win->status_bar_err;
-
-			g_idle_add(worker_set_err, err);
-
-			break;
-		}
-
-		if (poll_num > 0) 
-		{
-			if (fds[0].revents & POLLIN) 
-			{
-				break;
-			}
-
-			if (fds[1].revents & POLLIN) 
-			{
-				int res = handle_events(fd, wd, ld);
-
-				if (res == -1)
-					break;
-
-				struct ListenerLabelData *lld = g_new(struct ListenerLabelData, 1);
-				lld->label = win->status_bar_entries;
-				lld->count = res;
-				lld->clear = win->status_bar_clear;
-
-				g_idle_add(worker_update_label, lld);
-			}
-		}
-	}
-
-	inotify_rm_watch(fd, wd);
-	close(fd);
-
-	g_idle_add(worker_gui_set_start, ld);
-
-	lt->running = 0;
-	g_idle_add(worker_finish_in_idle, ld);
-	return NULL;
-}
-
-static void listening_clicked(GtkButton *button,
-		gpointer data)
-{
-	InotifyAppWindow *win;
-
-	win = INOTIFY_APP_WINDOW(data);
-
-	if (lt && lt->running == 1)
-	{
-		eventfd_write(lt->efd, 1);
-		g_thread_join(lt->thread);
-		close(lt->efd);
-		g_free(lt);
-	}
-	else
-	{
-		GtkEntry *entry;
-		GtkEntryBuffer *buffer;
-		struct ListenerData *ld;
-		int efd;
-
-		efd = eventfd(0, 0);
-
-		if (efd == -1)
-		{
-			char *error = g_strdup_printf("eventfd: %s", strerror(errno));
-			gtk_label_set_text(GTK_LABEL(win->status_bar_err), error);
-
-			if ((gtk_widget_get_visible(win->status_bar_err)) == FALSE)
-				gtk_widget_set_visible(win->status_bar_err, TRUE);
-
-			g_free(error);
-			return;
-		}
-
-		entry = GTK_ENTRY(win->directory_choose_entry);
-		buffer = gtk_entry_get_buffer(entry);
-
-		const char *dir = gtk_entry_buffer_get_text(buffer);
-
-		ld = (struct ListenerData*)g_malloc(sizeof(struct ListenerData));
-		ld->dir = dir;
-		ld->win = GTK_WIDGET(win);
-
-		lt = (struct ListenerThread*)g_malloc(sizeof(struct ListenerThread));
-		lt->running = 1;
-		lt->close = 0;
-		lt->efd = efd;
-		lt->thread = g_thread_new("worker", worker, (gpointer) ld);
 	}
 }
 
@@ -949,6 +964,9 @@ static void inotify_app_window_class_init(InotifyAppWindowClass *class)
 	gtk_widget_class_bind_template_child(GTK_WIDGET_CLASS(class), InotifyAppWindow, status_bar_err);
 	gtk_widget_class_bind_template_child(GTK_WIDGET_CLASS(class), InotifyAppWindow, view_status_bar_contents);
 	gtk_widget_class_bind_template_child(GTK_WIDGET_CLASS(class), InotifyAppWindow, view_status_bar_modified);
+	gtk_widget_class_bind_template_child(GTK_WIDGET_CLASS(class), InotifyAppWindow, stack1);
+	gtk_widget_class_bind_template_child(GTK_WIDGET_CLASS(class), InotifyAppWindow, page1);
+	gtk_widget_class_bind_template_child(GTK_WIDGET_CLASS(class), InotifyAppWindow, page2);
 }
 
 InotifyAppWindow* inotify_app_window_new(InotifyApp *app)

@@ -90,7 +90,7 @@
 										<property name="name">page1</property>
 										<property name="title">View</property>
 										<property name="child">
-											<object class="GtkBox">
+											<object class="GtkBox" id="page1">
 												<property name="vexpand">True</property>
 												<property name="orientation">vertical</property>
 												<child>
@@ -161,7 +161,7 @@
 										<property name="name">page2</property>
 										<property name="title">Events</property>
 										<property name="child">
-											<object class="GtkBox">
+											<object class="GtkBox" id="page2">
 												<property name="vexpand">True</property>
 												<property name="orientation">vertical</property>
 												<child>
