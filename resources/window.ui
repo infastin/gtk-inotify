@@ -98,6 +98,7 @@
 														<property name="vexpand">True</property>
 														<child>
 															<object class="GtkTreeView" id="view">
+																<property name="enable-search">False</property>
 																<property name="vexpand">True</property>
 																<property name="model">liststore1</property>
 																<property name="margin-start">10</property>
@@ -169,6 +170,7 @@
 														<property name="vexpand">True</property>
 															<child>
 																<object class="GtkTreeView" id="list">
+																	<property name="enable-search">False</property>
 																	<property name="vexpand">True</property>
 																	<property name="model">liststore2</property>
 																	<property name="margin-start">10</property>
