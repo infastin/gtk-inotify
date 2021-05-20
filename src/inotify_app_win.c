@@ -450,6 +450,7 @@ static void listening_clicked(GtkButton *button,
 		g_thread_join(lt->thread);
 		close(lt->efd);
 		g_free(lt);
+		lt = NULL;
 	}
 	else
 	{
